@@ -19,7 +19,7 @@ try:
     MQTT_PASS  = getattr(secrets, "MQTT_PASSWORD", None)
     DEV_NAME   = getattr(secrets, "DEVICE_NAME", "Environmental Monitor")
     PUB_SEC    = int(getattr(secrets, "PUBLISH_INTERVAL_SEC", 300))
-except:
+except (ImportError, AttributeError):
     # Fallbacks (only for first-boot testing)
     WIFI_SSID = "ssid"; WIFI_PASS = "pass"
     MQTT_HOST="10.0.0.10"; MQTT_PORT=1883; MQTT_USER=None; MQTT_PASS=None
