@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "v*.*"
+      - "v*"
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff mpy-cross
+
+      - name: Lint & syntax check
+        run: |
+          ruff check .
+          test -f main.py && mpy-cross main.py
+
+      - name: Create distribution zip
+        run: |
+          mkdir -p dist
+          # Include the core files users need on the Pico
+          cp -v main.py dist/ 2>/dev/null || true
+          cp -v secrets.py.example dist/ 2>/dev/null || true
+          cp -v README.md dist/ 2>/dev/null || true
+          cp -v LICENSE dist/ 2>/dev/null || true
+          cd dist
+          zip -r "../pico-env-monitor-${GITHUB_REF_NAME}.zip" .
+          cd ..
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: |
+            Release ${{ github.ref_name }}
+
+            What's inside:
+            - main.py
+            - secrets.py.example
+            - README.md
+            - LICENSE
+
+            How to use:
+            1) Copy main.py + secrets.py.example to the Pico (rename to secrets.py)
+            2) Edit secrets.py with your Wi-Fi/MQTT details
+            3) Reboot the Pico
+          draft: false
+          prerelease: false
+          files: |
+            pico-env-monitor-${{ github.ref_name }}.zip
