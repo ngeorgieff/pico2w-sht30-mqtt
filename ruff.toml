@@ -1,0 +1,15 @@
+# ruff.toml
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W", "I"]   # pycodestyle, pyflakes, warnings, import sort
+ignore = [
+  "F401",  # allow unused imports in MicroPython snippets if needed
+  "F405",  # allow from X import * in constrained contexts
+  "F821",  # undefined names (e.g., machine, network in CPython)
+]
+fix = true
+
+[format]
+quote-style = "preserve"
+line-ending = "auto"
