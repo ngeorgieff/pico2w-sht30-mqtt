@@ -51,9 +51,9 @@ It includes **Home Assistant MQTT Discovery**, so sensors appear automatically i
 
 ### 3. Clone Repo & Upload
 ```bash
-git clone https://github.com/yourusername/pico-env-monitor.git
+git clone https://github.com/actualusername/pico-env-monitor.git
 
-	•	Upload main.py and secrets.py to the Pico via Thonny
+- Upload main.py and secrets.py to the Pico via Thonny
 
 ⸻
 
