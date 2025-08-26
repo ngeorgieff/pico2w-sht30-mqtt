@@ -1,8 +1,3 @@
-Got it — here’s a clean README.md without any emojis:
-
-⸻
-
-
 # Raspberry Pi Pico W Environmental Monitor  
 (M5Stack ENV III / SHT30 → MQTT → Home Assistant)
 
