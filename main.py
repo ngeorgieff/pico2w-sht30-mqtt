@@ -1,8 +1,12 @@
 # Pico 2 W + SHT30 → MQTT (per-metric time/value) — optimized & hardened
 
-import time, ujson, struct, gc
-from machine import I2C, Pin, reset, WDT
+import gc
+import struct
+import time
+
 import network
+import ujson
+from machine import I2C, WDT, Pin, reset
 
 # ====== USER SETTINGS (from secrets.py if present) ============================
 try:
