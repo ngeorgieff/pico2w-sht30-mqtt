@@ -2,13 +2,14 @@
 target-version = "py311"
 
 [lint]
-select = ["E", "F", "W", "I"]   # pycodestyle, pyflakes, warnings, import sort
+select = ["E", "F", "W", "I"]
 ignore = [
-  "F401",  # allow unused imports in MicroPython snippets if needed
-  "F405",  # allow from X import * in constrained contexts
-  "F821",  # undefined names (e.g., machine, network in CPython)
+  "F401",
+  "F405",
+  "F821",
 ]
-fix = true
+# Remove or replace the following line:
+# fix = true
 
 [format]
 quote-style = "preserve"
