@@ -185,7 +185,7 @@ class SHT30:
             elif rh > 100: rh = 100.0
             self.last_t, self.last_h = tc, rh
             return tc, rh, True
-        except:
+        except OSError:
             return self.last_t, self.last_h, False
 
 # ====== NET HELPERS ==========================================================
