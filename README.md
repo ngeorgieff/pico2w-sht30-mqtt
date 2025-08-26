@@ -178,5 +178,3 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ---
-
-Do you also want me to generate the `LICENSE` file separately (plain MIT text), or just keep it embedded in the README?
