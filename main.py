@@ -1,7 +1,8 @@
 # Pico 2 W + SHT30 → MQTT (per-metric time/value) — optimized & hardened
 # Tested on MicroPython for RP2350 (Pico 2 W). Place as main.py.
-import gc, struct, time, ujson, network, micropython, machine
-from machine import I2C, WDT, Pin
+from machine import I2C
+from machine import WDT
+from machine import Pin
 
 micropython.alloc_emergency_exception_buf(256)
 
