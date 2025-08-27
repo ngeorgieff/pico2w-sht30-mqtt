@@ -298,9 +298,8 @@ def run():
                 # every other failure, recycle Wi-Fi
                 full_net_recycle(wdt=wdt)
             # bounded backoff (WDT-safe)
-            t0 = time.ticks_ms()
-            while time.ticks_diff(time.ticks_ms(), t0) < min(2000 + 300*tries, 6000):
-                wdt.feed(); time.sleep_ms(100)
+            # bounded backoff (WDT-safe)
+            bounded_backoff_wait(2000, 300, tries, 6000, wdt)
             if tries > 6:
                 safe_reset()
 
