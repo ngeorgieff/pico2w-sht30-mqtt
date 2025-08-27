@@ -331,9 +331,7 @@ def run():
                     except Exception:
                         tries += 1
                         client.close()
-                        t0 = time.ticks_ms()
-                        while time.ticks_diff(time.ticks_ms(), t0) < min(1500 + 250*tries, 5000):
-                            wdt.feed(); time.sleep_ms(100)
+                        bounded_backoff_wait(1500, 250, tries, 5000, wdt)
                         if tries > 6:
                             safe_reset()
 
