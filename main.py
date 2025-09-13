@@ -1,5 +1,12 @@
 # Pico 2 W + SHT30 → MQTT (per-metric time/value) — optimized & hardened
-# Tested on MicroPython for RP2350 (Pico 2 W). Place as main.py.
+# Tested on MicroPython for RP2350 (Pico 2 W). Place as main.py
+import micropython
+import time
+import struct
+import network
+import machine
+import gc
+import ujson
 from machine import I2C
 from machine import WDT
 from machine import Pin
@@ -94,12 +101,15 @@ class MiniMQTT:
     def connect(self, wdt=None):
         # DNS + TCP with short, bounded timeouts
         if wdt: wdt.feed()
-        ai = socket.getaddrinfo(self.host, self.port, 0, socket.SOCK_STREAM)[0][-1]
-        if wdt: wdt.feed()
-        s = socket.socket()
+        
         try:
+            ai = socket.getaddrinfo(self.host, self.port, 0, socket.SOCK_STREAM)[0][-1]
+            if wdt: wdt.feed()
+            
+            s = socket.socket()
             s.settimeout(5)
             s.connect(ai)
+            
             if self.use_ssl:
                 if sslmod is None:
                     raise OSError("ssl not available")
@@ -110,6 +120,7 @@ class MiniMQTT:
             if self.user is not None:
                 flags |= 0x80
                 if self.pwd is not None: flags |= 0x40
+            
             vh = b"\x00\x04MQTT\x04" + bytes([flags, self.keep >> 8, self.keep & 0xFF])
             pl = struct.pack("!H", len(self.cid)) + self.cid
             if self.user is not None:
@@ -121,12 +132,18 @@ class MiniMQTT:
             if wdt: wdt.feed()
 
             t = self.s.read(1)
-            if not t or t != b"\x20": raise OSError("connack")
+            if not t or t != b"\x20": raise OSError(f"Bad CONNACK header: {t}")
             _ = self._rlen()
             ack = self.s.read(2)
-            if not ack or ack[1] != 0x00: raise OSError("rc")
+            if not ack or ack[1] != 0x00: 
+                error_codes = {1: "Unacceptable protocol version", 2: "Identifier rejected", 
+                              3: "Server unavailable", 4: "Bad user/password", 5: "Not authorized"}
+                error_msg = error_codes.get(ack[1] if ack else 0, f"Unknown error: {ack[1] if ack else 'no response'}")
+                raise OSError(f"MQTT connect failed: {error_msg}")
+            
             self.last_io = time.ticks_ms()
-        except Exception:
+            
+        except Exception as e:
             try: s.close()
             except: pass
             self.s = None
@@ -193,8 +210,8 @@ class SHT30:
         try:
             self._w(self.CMD_MEAS_HIGH_NC); time.sleep_ms(15)
             d = self.i2c.readfrom(self.addr, 6)
-            if len(d) != 6: raise OSError
-            if _crc8(d[0:2]) != d[2] or _crc8(d[3:5]) != d[5]: raise OSError
+            if len(d) != 6: raise OSError(f"Expected 6 bytes, got {len(d)}")
+            if _crc8(d[0:2]) != d[2] or _crc8(d[3:5]) != d[5]: raise OSError("CRC check failed")
             tr = (d[0] << 8) | d[1]; hr = (d[3] << 8) | d[4]
             tc = -45.0 + (175.0 * tr / 65535.0)
             rh = min(100.0, max(0.0, 100.0 * hr / 65535.0))
@@ -240,22 +257,35 @@ def full_net_recycle(wdt=None):
     time.sleep_ms(200)
     return wifi_connect(wdt=wdt)
 
+def bounded_backoff_wait(base_ms, increment_ms, tries, max_ms, wdt=None):
+    # Bounded exponential backoff with WDT feeding
+    wait_ms = min(base_ms + increment_ms * tries, max_ms)
+    start = time.ticks_ms()
+    while time.ticks_diff(time.ticks_ms(), start) < wait_ms:
+        if wdt:
+            wdt.feed()
+        time.sleep_ms(100)
+
 # ====== RUNTIME ==============================================================
 _temp_pl = {"time": 0, "value": 0.0}
 _hum_pl  = {"time": 0, "value": 0.0}
 
-# Watchdog (keep fairly generous; we feed inside all loops)
-WDT_SEC = 10
-wdt = WDT(timeout=WDT_SEC * 1000)
+# Watchdog (keep within max limit; we feed inside all loops)
+WDT_SEC = 8  # Max allowed is ~8.4 seconds
+wdt = WDT(timeout=8300)  # Use safe value under the 8388ms limit
 
 def _now_ms():
     try: return time.ticks_ms()
     except: return int(time.time() * 1000)
 
-def _publish_reading(cli, topic, pl, val):
-    pl["time"] = _now_ms()
-    pl["value"] = val
-    cli.publish(topic, ujson.dumps(pl), retain=False)
+def _publish_reading(m, sensor, topic, val):
+    payload = ujson.dumps({
+        'device': DEV_ID,
+        'sensor': sensor,
+        'value': val,
+        'timestamp': time.time()
+    })
+    m.publish(topic, payload)
 
 def safe_reset():
     # Close sockets, turn off Wi-Fi, small delay, GC, then hard reset
@@ -268,9 +298,19 @@ def safe_reset():
 def run():
     # I2C0 on Pico 2 W: SDA=GP0, SCL=GP1
     i2c = I2C(0, sda=Pin(0), scl=Pin(1), freq=100_000)
+    
+    # Scan for I2C devices
+    devices = i2c.scan()
+    
+    if 0x44 not in devices:
+        print("✗ SHT30 sensor not found at address 0x44!")
+        print("Check wiring: VCC->3.3V, GND->GND, SDA->GP0, SCL->GP1")
+        safe_reset()
+    
     sht = SHT30(i2c)
 
     if not wifi_connect(wdt=wdt):
+        print("✗ WiFi connection failed, resetting...")
         safe_reset()
 
     # Keepalive tuned to publish cadence (MQTT requires < keepalive)
@@ -291,35 +331,38 @@ def run():
             client.publish(TEMP_T, ujson.dumps({"time": nowms, "value": round(tf,2)}), retain=True)
             client.publish(HUM_T,  ujson.dumps({"time": nowms, "value": round(h,1)}),  retain=True)
             break
-        except Exception:
+        except Exception as e:
             tries += 1
             client.close()
             if tries % 2 == 1:
                 # every other failure, recycle Wi-Fi
                 full_net_recycle(wdt=wdt)
             # bounded backoff (WDT-safe)
-            # bounded backoff (WDT-safe)
             bounded_backoff_wait(2000, 300, tries, 6000, wdt)
             if tries > 6:
+                print("✗ Too many MQTT connection failures, resetting...")
                 safe_reset()
 
     period = PUB_SEC * 1000
     next_tick = time.ticks_add(time.ticks_ms(), period)
     fail_pub = 0
     bad_reads = 0
+    loop_count = 0
 
     while True:
         wdt.feed()
         now = time.ticks_ms()
+        loop_count += 1
 
         # keepalive ping if idle
         if time.ticks_diff(now, client.last_io) > (KEEP * 1000 // 2):
             try:
                 client.ping()
-            except Exception:
+            except Exception as e:
                 # reconnect path
                 client.close()
                 if not full_net_recycle(wdt=wdt):
+                    print("✗ WiFi reconnection failed, resetting...")
                     safe_reset()
                 tries = 0
                 while True:
@@ -328,11 +371,12 @@ def run():
                         client.connect(wdt=wdt)
                         client.publish(AVAIL_T, "online", retain=True)
                         break
-                    except Exception:
+                    except Exception as e2:
                         tries += 1
                         client.close()
                         bounded_backoff_wait(1500, 250, tries, 5000, wdt)
                         if tries > 6:
+                            print("✗ Too many reconnection failures, resetting...")
                             safe_reset()
 
         # scheduled publish
@@ -356,16 +400,17 @@ def run():
 
             tf = t * 9/5 + 32
             try:
-                _publish_reading(client, TEMP_T, _temp_pl, round(tf, 2))
-                _publish_reading(client, HUM_T,  _hum_pl,  round(h, 1))
+                _publish_reading(client, 'temperature', TEMP_T, round(tf, 2))
+                _publish_reading(client, 'humidity', HUM_T, round(h, 1))
                 client.publish(AVAIL_T, "online", retain=True)
                 fail_pub = 0
-            except Exception:
+            except Exception as e:
                 fail_pub += 1
                 client.close()
                 # GC + radio recycle + bounded backoff (all WDT-safe)
                 gc.collect()
                 if not full_net_recycle(wdt=wdt) or fail_pub >= 3:
+                    print("✗ Too many publish failures or WiFi issues, resetting...")
                     safe_reset()
                 tries = 0
                 while True:
@@ -374,13 +419,14 @@ def run():
                         client.connect(wdt=wdt)
                         client.publish(AVAIL_T, "online", retain=True)
                         break
-                    except Exception:
+                    except Exception as e2:
                         tries += 1
                         client.close()
                         t0 = time.ticks_ms()
                         while time.ticks_diff(time.ticks_ms(), t0) < min(1200 + 250*tries, 5000):
                             wdt.feed(); time.sleep_ms(100)
                         if tries > 6:
+                            print("✗ Too many reconnection attempts, resetting...")
                             safe_reset()
 
             gc.collect()
@@ -390,12 +436,19 @@ def run():
         # defensive: if Wi-Fi fell off in background, try to get it back
         if not WLAN.isconnected():
             if not full_net_recycle(wdt=wdt):
+                print("✗ WiFi recovery failed, resetting...")
                 safe_reset()
+
+print("=== Pico 2 W SHT30 MQTT Monitor ===")
 
 try:
     run()
 except KeyboardInterrupt:
-    pass
-except Exception:
+    print("\n✓ Stopped by user (Ctrl+C)")
+except Exception as e:
+    print(f"\n✗ Unexpected error in main: {e}")
+    import sys
+    sys.print_exception(e)
+    print("Performing safety reset...")
     # last-chance safety net
     safe_reset()
