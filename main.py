@@ -1,4 +1,4 @@
-# Pico 2 W + SHT30 → MQTT (per-metric time/value) — optimized & hardened
+# Pico 2 W + SHT30 to Home Assistant MQTT (with Discovery) - optimized & hardened
 # Tested on MicroPython for RP2350 (Pico 2 W). Place as main.py
 import micropython
 import time
@@ -22,26 +22,32 @@ try:
     MQTT_PORT  = int(getattr(secrets, "MQTT_PORT", 1883))
     MQTT_USER  = getattr(secrets, "MQTT_USER", None)
     MQTT_PASS  = getattr(secrets, "MQTT_PASSWORD", None)
-    DEV_NAME   = getattr(secrets, "DEVICE_NAME", "Environmental Monitor")
+    DEV_NAME   = getattr(secrets, "DEVICE_NAME", "Network Rack")
     PUB_SEC    = int(getattr(secrets, "PUBLISH_INTERVAL_SEC", 300))
 except (ImportError, AttributeError):
     WIFI_SSID="ssid"; WIFI_PASS="pass"
     MQTT_HOST="10.0.0.10"; MQTT_PORT=1883; MQTT_USER=None; MQTT_PASS=None
-    DEV_NAME="environmental_monitor"; PUB_SEC=300
+    DEV_NAME="Network Rack"; PUB_SEC=300
 
-# ====== SLUG + TOPICS ========================================================
-def _slug(s):
-    s = (s or "pico_sensor").lower()
-    out = []
-    for ch in s:
-        out.append(ch if ('a' <= ch <= 'z' or '0' <= ch <= '9' or ch == '_') else '_')
-    v = "".join(out).strip('_')
-    return v or "pico_sensor"
+# ====== HOME ASSISTANT MQTT DISCOVERY SETTINGS ================================
+# Home Assistant MQTT Discovery prefix (standard)
+HA_DISCOVERY_PREFIX = "homeassistant"
 
-DEV_ID  = _slug(DEV_NAME)
-AVAIL_T = DEV_ID + "/status"
-TEMP_T  = DEV_ID + "/temperature_f"
-HUM_T   = DEV_ID + "/humidity"
+# Device identifier (used in topics and entity IDs - keep it short!)
+# Entity IDs will be: sensor.network_rack_temperature, sensor.network_rack_humidity
+DEVICE_ID = "network_rack"
+
+# Home Assistant MQTT Topics
+# Discovery config topics
+TEMP_CONFIG_TOPIC = f"{HA_DISCOVERY_PREFIX}/sensor/{DEVICE_ID}/temperature/config"
+HUM_CONFIG_TOPIC = f"{HA_DISCOVERY_PREFIX}/sensor/{DEVICE_ID}/humidity/config"
+
+# State topics
+TEMP_STATE_TOPIC = f"{HA_DISCOVERY_PREFIX}/sensor/{DEVICE_ID}/temperature/state"
+HUM_STATE_TOPIC = f"{HA_DISCOVERY_PREFIX}/sensor/{DEVICE_ID}/humidity/state"
+
+# Availability topic (shared for all sensors from this device)
+AVAIL_TOPIC = f"{HA_DISCOVERY_PREFIX}/sensor/{DEVICE_ID}/availability"
 
 # ====== MINIMAL MQTT (QoS0) ==================================================
 try:
@@ -220,7 +226,7 @@ class SHT30:
         except OSError:
             return self.last_t, self.last_h, False
 
-# ====== NET HELPERS (Pico 2 W safe) =========================================
+# ====== NET HELPERS (Pico 2 W safe) ==========================================
 WLAN = network.WLAN(network.STA_IF)
 
 def _wifi_off():
@@ -266,10 +272,64 @@ def bounded_backoff_wait(base_ms, increment_ms, tries, max_ms, wdt=None):
             wdt.feed()
         time.sleep_ms(100)
 
-# ====== RUNTIME ==============================================================
-_temp_pl = {"time": 0, "value": 0.0}
-_hum_pl  = {"time": 0, "value": 0.0}
+# ====== HOME ASSISTANT MQTT DISCOVERY ========================================
+def publish_ha_discovery(client, wdt=None):
+    """Publish Home Assistant MQTT Discovery messages for auto-configuration"""
+    if wdt: wdt.feed()
+    
+    # Get MAC address for unique ID
+    mac = WLAN.config('mac')
+    mac_str = ''.join('{:02x}'.format(b) for b in mac)
+    
+    # Device information (shared across all sensors)
+    device_info = {
+        "identifiers": [DEVICE_ID],
+        "name": DEV_NAME,
+        "model": "Pico 2 W + SHT30",
+        "manufacturer": "Raspberry Pi",
+        "sw_version": "1.0"
+    }
+    
+    # Temperature sensor discovery config
+    # Note: Use simple names - HA combines device name + sensor name for display
+    temp_config = {
+        "name": "Temperature",  # HA displays as: "Network Rack Temperature"
+        "unique_id": f"{DEVICE_ID}_temperature",
+        "device_class": "temperature",
+        "state_topic": TEMP_STATE_TOPIC,
+        "unit_of_measurement": "°F",
+        "value_template": "{{ value }}",
+        "availability_topic": AVAIL_TOPIC,
+        "device": device_info
+    }
+    
+    # Humidity sensor discovery config
+    hum_config = {
+        "name": "Humidity",  # HA displays as: "Network Rack Humidity"
+        "unique_id": f"{DEVICE_ID}_humidity",
+        "device_class": "humidity",
+        "state_topic": HUM_STATE_TOPIC,
+        "unit_of_measurement": "%",
+        "value_template": "{{ value }}",
+        "availability_topic": AVAIL_TOPIC,
+        "device": device_info
+    }
+    
+    # Publish discovery messages (retained)
+    print("Publishing HA Discovery configs...")
+    client.publish(TEMP_CONFIG_TOPIC, ujson.dumps(temp_config), retain=True)
+    if wdt: wdt.feed()
+    time.sleep_ms(50)
+    
+    client.publish(HUM_CONFIG_TOPIC, ujson.dumps(hum_config), retain=True)
+    if wdt: wdt.feed()
+    time.sleep_ms(50)
+    
+    # Publish online status
+    client.publish(AVAIL_TOPIC, "online", retain=True)
+    print("HA Discovery complete")
 
+# ====== RUNTIME ==============================================================
 # Watchdog (keep within max limit; we feed inside all loops)
 WDT_SEC = 8  # Max allowed is ~8.4 seconds
 wdt = WDT(timeout=8300)  # Use safe value under the 8388ms limit
@@ -277,15 +337,6 @@ wdt = WDT(timeout=8300)  # Use safe value under the 8388ms limit
 def _now_ms():
     try: return time.ticks_ms()
     except: return int(time.time() * 1000)
-
-def _publish_reading(m, sensor, topic, val):
-    payload = ujson.dumps({
-        'device': DEV_ID,
-        'sensor': sensor,
-        'value': val,
-        'timestamp': time.time()
-    })
-    m.publish(topic, payload)
 
 def safe_reset():
     # Close sockets, turn off Wi-Fi, small delay, GC, then hard reset
@@ -303,35 +354,45 @@ def run():
     devices = i2c.scan()
     
     if 0x44 not in devices:
-        print("✗ SHT30 sensor not found at address 0x44!")
+        print("SHT30 sensor not found at address 0x44!")
         print("Check wiring: VCC->3.3V, GND->GND, SDA->GP0, SCL->GP1")
         safe_reset()
     
+    print("SHT30 sensor detected")
     sht = SHT30(i2c)
 
+    print(f"Connecting to WiFi: {WIFI_SSID}")
     if not wifi_connect(wdt=wdt):
-        print("✗ WiFi connection failed, resetting...")
+        print("WiFi connection failed, resetting...")
         safe_reset()
+    
+    print(f"WiFi connected: {WLAN.ifconfig()[0]}")
 
     # Keepalive tuned to publish cadence (MQTT requires < keepalive)
     KEEP = max(30, min(240, PUB_SEC // 2))
-    client = MiniMQTT(DEV_ID, MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS, keepalive=KEEP)
+    client = MiniMQTT(DEVICE_ID, MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS, keepalive=KEEP)
 
     # Initial MQTT connect (WDT-safe)
+    print(f"Connecting to MQTT broker: {MQTT_HOST}:{MQTT_PORT}")
     tries = 0
     while True:
         wdt.feed()
         try:
             client.connect(wdt=wdt)
-            client.publish(AVAIL_T, "online", retain=True)
-            # bootstrap one retained value for HA
+            print("MQTT connected")
+            
+            # Publish Home Assistant Discovery configs
+            publish_ha_discovery(client, wdt=wdt)
+            
+            # Bootstrap one reading
             t, h, _ = sht.read()
             tf = t * 9/5 + 32
-            nowms = _now_ms()
-            client.publish(TEMP_T, ujson.dumps({"time": nowms, "value": round(tf,2)}), retain=True)
-            client.publish(HUM_T,  ujson.dumps({"time": nowms, "value": round(h,1)}),  retain=True)
+            client.publish(TEMP_STATE_TOPIC, str(round(tf, 2)), retain=True)
+            client.publish(HUM_STATE_TOPIC, str(round(h, 1)), retain=True)
+            print(f"Initial reading: {round(tf,2)}F, {round(h,1)}%")
             break
         except Exception as e:
+            print(f"MQTT connection failed: {e}")
             tries += 1
             client.close()
             if tries % 2 == 1:
@@ -340,7 +401,7 @@ def run():
             # bounded backoff (WDT-safe)
             bounded_backoff_wait(2000, 300, tries, 6000, wdt)
             if tries > 6:
-                print("✗ Too many MQTT connection failures, resetting...")
+                print("Too many MQTT connection failures, resetting...")
                 safe_reset()
 
     period = PUB_SEC * 1000
@@ -348,6 +409,9 @@ def run():
     fail_pub = 0
     bad_reads = 0
     loop_count = 0
+
+    print(f"Monitoring started (publish every {PUB_SEC}s)")
+    print("=" * 50)
 
     while True:
         wdt.feed()
@@ -359,24 +423,25 @@ def run():
             try:
                 client.ping()
             except Exception as e:
+                print("Ping failed, reconnecting...")
                 # reconnect path
                 client.close()
                 if not full_net_recycle(wdt=wdt):
-                    print("✗ WiFi reconnection failed, resetting...")
+                    print("WiFi reconnection failed, resetting...")
                     safe_reset()
                 tries = 0
                 while True:
                     wdt.feed()
                     try:
                         client.connect(wdt=wdt)
-                        client.publish(AVAIL_T, "online", retain=True)
+                        publish_ha_discovery(client, wdt=wdt)
                         break
                     except Exception as e2:
                         tries += 1
                         client.close()
                         bounded_backoff_wait(1500, 250, tries, 5000, wdt)
                         if tries > 6:
-                            print("✗ Too many reconnection failures, resetting...")
+                            print("Too many reconnection failures, resetting...")
                             safe_reset()
 
         # scheduled publish
@@ -386,8 +451,10 @@ def run():
             t, h, ok = sht.read()
             if not ok:
                 bad_reads += 1
+                print("Sensor read failed (CRC error)")
                 if bad_reads >= 3:
-                    # reinit I²C & sensor after repeated CRC/bus errors
+                    # reinit I2C & sensor after repeated CRC/bus errors
+                    print("Reinitializing I2C and sensor...")
                     try:
                         i2c.deinit()
                     except: pass
@@ -400,24 +467,27 @@ def run():
 
             tf = t * 9/5 + 32
             try:
-                _publish_reading(client, 'temperature', TEMP_T, round(tf, 2))
-                _publish_reading(client, 'humidity', HUM_T, round(h, 1))
-                client.publish(AVAIL_T, "online", retain=True)
+                # Publish simple numeric values to state topics
+                client.publish(TEMP_STATE_TOPIC, str(round(tf, 2)))
+                client.publish(HUM_STATE_TOPIC, str(round(h, 1)))
+                client.publish(AVAIL_TOPIC, "online", retain=True)
+                print(f"Published: {round(tf,2)}F, {round(h,1)}% RH")
                 fail_pub = 0
             except Exception as e:
+                print(f"Publish failed: {e}")
                 fail_pub += 1
                 client.close()
                 # GC + radio recycle + bounded backoff (all WDT-safe)
                 gc.collect()
                 if not full_net_recycle(wdt=wdt) or fail_pub >= 3:
-                    print("✗ Too many publish failures or WiFi issues, resetting...")
+                    print("Too many publish failures or WiFi issues, resetting...")
                     safe_reset()
                 tries = 0
                 while True:
                     wdt.feed()
                     try:
                         client.connect(wdt=wdt)
-                        client.publish(AVAIL_T, "online", retain=True)
+                        publish_ha_discovery(client, wdt=wdt)
                         break
                     except Exception as e2:
                         tries += 1
@@ -426,7 +496,7 @@ def run():
                         while time.ticks_diff(time.ticks_ms(), t0) < min(1200 + 250*tries, 5000):
                             wdt.feed(); time.sleep_ms(100)
                         if tries > 6:
-                            print("✗ Too many reconnection attempts, resetting...")
+                            print("Too many reconnection attempts, resetting...")
                             safe_reset()
 
             gc.collect()
@@ -435,18 +505,21 @@ def run():
         time.sleep_ms(30)
         # defensive: if Wi-Fi fell off in background, try to get it back
         if not WLAN.isconnected():
+            print("WiFi connection lost, recovering...")
             if not full_net_recycle(wdt=wdt):
-                print("✗ WiFi recovery failed, resetting...")
+                print("WiFi recovery failed, resetting...")
                 safe_reset()
 
-print("=== Pico 2 W SHT30 MQTT Monitor ===")
+print("=== Pico 2 W Network Rack Monitor ===")
+print(f"Device: {DEV_NAME}")
+print(f"ID: {DEVICE_ID}")
 
 try:
     run()
 except KeyboardInterrupt:
-    print("\n✓ Stopped by user (Ctrl+C)")
+    print("\nStopped by user (Ctrl+C)")
 except Exception as e:
-    print(f"\n✗ Unexpected error in main: {e}")
+    print(f"\nUnexpected error in main: {e}")
     import sys
     sys.print_exception(e)
     print("Performing safety reset...")
