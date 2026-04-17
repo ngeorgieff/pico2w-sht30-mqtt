@@ -15,3 +15,7 @@ Thumbs.db
 
 # Backup files
 *~
+
+# MemPalace local files
+entities.json
+mempalace.yaml
