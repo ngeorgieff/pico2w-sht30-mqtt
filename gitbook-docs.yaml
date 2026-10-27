@@ -1,5 +1,4 @@
 $schema: https://api.gitbook.com/gitbook-docs.yaml
-version: 1
 site:
   title: Raspberry Pi Pico W Environmental Monitor
   structure:
@@ -10,3 +9,10 @@ site:
       default: true
       content:
         directory: ./
+    - type: space
+      key: space-1
+      title: Imported content
+      path: imported-content
+      draft: true
+      content:
+        directory: ./imported-content
