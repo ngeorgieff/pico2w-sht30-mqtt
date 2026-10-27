@@ -1,24 +1,12 @@
-## Goal
-
-Prepare this repository for GitBook Site Git Sync by creating `gitbook-docs.yaml`.
-
-## Context
-
-- Repository: GitHub `ngeorgieff/pico2w-sht30-mqtt`
-- Branch: `main`
-- Directory: root of the repository
-- Output file: `gitbook-docs.yaml`
-
-## Instructions
-
-1. Read https://api.gitbook.com/gitbook-docs.yaml — the complete schema for the file, including its rules and examples.
-2. Analyze the structure and documentation content inside the root of the repository.
-3. Map the directories that exist onto spaces and sections. Never invent content.
-4. Write `gitbook-docs.yaml` to match what you found.
-5. Check that every `content.directory` in the file exists. Leave every other file untouched.
-
-## Deliverables
-
-1. Print the structure you built as a tree. Include every section and space with its title, path, and content directory.
-2. Report how many sections and spaces you created, plus anything you skipped or guessed.
-3. Commit `gitbook-docs.yaml`, push it to `main`, and report the file path and commit SHA.
+$schema: https://api.gitbook.com/gitbook-docs.yaml
+version: 1
+site:
+  title: Raspberry Pi Pico W Environmental Monitor
+  structure:
+    - type: space
+      key: space-readme
+      title: Pico W Environmental Monitor
+      path: pico2w-sht30-mqtt
+      default: true
+      content:
+        directory: ./
